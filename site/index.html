@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Interactive browser for miniscript policy and descriptor ASTs — compiled to WASM from rust-miniscript." />
+  <title>MINISCRIPT://AST_BROWSER</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13' fill='%2300ff41'>λ</text></svg>" />
+</head>
+<body>
+  <canvas id="rain" aria-hidden="true"></canvas>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <header>
+    <div class="title">MINISCRIPT://AST_BROWSER<span class="cursor">▌</span></div>
+    <div class="subtitle">rust-miniscript → wasm32 &nbsp;·&nbsp; descriptor &amp; policy decompiler terminal</div>
+  </header>
+
+  <main>
+    <!-- ===================== INPUT ===================== -->
+    <section class="panel" id="input-panel">
+      <div class="panel-head">INPUT // spending_conditions</div>
+      <textarea id="input" rows="3" spellcheck="false"
+        placeholder="paste a miniscript POLICY  e.g. or(pk(KEY),and(pk(KEY),older(144)))&#10;or an OUTPUT DESCRIPTOR  e.g. wsh(and_v(v:pk(KEY),older(144)))"></textarea>
+      <div class="controls">
+        <label class="ctl">
+          <span>mode</span>
+          <select id="mode">
+            <option value="auto" selected>auto-detect</option>
+            <option value="policy">policy</option>
+            <option value="descriptor">descriptor</option>
+          </select>
+        </label>
+        <label class="ctl">
+          <span>examples</span>
+          <select id="examples">
+            <option value="">— load —</option>
+          </select>
+        </label>
+        <button id="run" disabled>▶ ANALYZE</button>
+      </div>
+      <div id="boot-status" class="boot">[ booting wasm module… ]</div>
+    </section>
+
+    <!-- ===================== ERROR ===================== -->
+    <div id="error" class="error" hidden></div>
+
+    <!-- ===================== RESULT ===================== -->
+    <section id="result" hidden>
+      <div class="warnings" id="warnings" hidden></div>
+
+      <div class="result-grid">
+        <div class="col-left">
+          <div class="panel" id="descriptor-panel">
+            <div class="panel-head">OUTPUT // descriptor</div>
+            <div id="descriptor-body" class="panel-body"></div>
+          </div>
+
+          <div class="panel" id="stats-panel">
+            <div class="panel-head">STATS // analysis</div>
+            <div id="stats-body" class="panel-body"></div>
+          </div>
+
+          <div class="panel" id="script-panel">
+            <div class="panel-head">SCRIPT // raw</div>
+            <div id="script-body" class="panel-body"></div>
+          </div>
+        </div>
+
+        <div class="col-right">
+          <div class="panel" id="tree-panel">
+            <div class="panel-head">
+              AST // spending_conditions
+              <span class="tree-tools">
+                <button id="expand-all" class="mini">[ + ] expand</button>
+                <button id="collapse-all" class="mini">[ − ] collapse</button>
+              </span>
+            </div>
+            <div id="tree-tabs" class="tabs" role="tablist"></div>
+            <div id="tree-container" class="tree-container" tabindex="0" aria-label="AST tree, use arrow keys to navigate"></div>
+          </div>
+
+          <div class="panel" id="node-panel">
+            <div class="panel-head">NODE // inspector</div>
+            <div id="node-detail" class="panel-body node-detail">
+              <span class="dim">select a node to inspect… (click or ↑↓←→ / enter)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="engine-info">engine: …</span>
+    <span class="sep">·</span>
+    <a href="https://github.com/portlandhodl/miniscript-ast-viewer">source</a>
+    <span class="sep">·</span>
+    <span class="dim">privacy is necessary for an open society in the electronic age</span>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
