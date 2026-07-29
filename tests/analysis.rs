@@ -161,6 +161,107 @@ fn invalid_input_errors() {
 }
 
 #[test]
+fn script_ranges_templates_and_instructions() {
+    let input = format!("wsh(and_v(v:pk({}),older(144)))", KEY_A);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let tree = &json["trees"][0];
+
+    // flat script info with instructions reassembling into the asm string
+    let script = &tree["script"];
+    let hex = script["hex"].as_str().unwrap();
+    assert!(hex.len() > 10);
+    let instrs = script["instructions"].as_array().unwrap();
+    assert!(instrs.len() >= 4);
+    let joined: Vec<&str> = instrs.iter().map(|i| i["text"].as_str().unwrap()).collect();
+    assert_eq!(joined.join(" "), script["asm"].as_str().unwrap());
+    // instruction ranges are contiguous and cover the whole script
+    assert_eq!(instrs[0]["start"], 0);
+    for w in instrs.windows(2) {
+        assert_eq!(w[0]["end"], w[1]["start"]);
+    }
+    assert_eq!(
+        instrs.last().unwrap()["end"].as_u64().unwrap(),
+        hex.len() as u64 / 2
+    );
+
+    // root node: whole-script range, template, subtree asm
+    let root = &tree["root"];
+    assert_eq!(root["scriptRange"], serde_json::json!([0, hex.len() / 2]));
+    assert_eq!(root["template"], "<A> <B>");
+    assert!(root["scriptAsm"]
+        .as_str()
+        .unwrap()
+        .contains("OP_CHECKSIGVERIFY"));
+
+    // older leaf: nested range with the right opcodes inside
+    let older = &root["children"][1];
+    assert_eq!(older["fragment"], "older");
+    assert_eq!(older["template"], "<n> OP_CHECKSEQUENCEVERIFY");
+    let [os, oe] = [
+        older["scriptRange"][0].as_u64().unwrap() as usize,
+        older["scriptRange"][1].as_u64().unwrap() as usize,
+    ];
+    assert!(os > 0 && oe <= hex.len() / 2);
+    let older_hex = &hex[os * 2..oe * 2];
+    assert!(
+        older_hex.starts_with("029000"),
+        "older leaf should push 144, got {older_hex}"
+    );
+}
+
+#[test]
+fn policy_tree_has_no_script_compiled_tree_does() {
+    let input = format!("or(pk({}),and(pk({}),older(144)))", KEY_A, KEY_B);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    assert!(json["trees"][0]["script"].is_null());
+    assert!(json["trees"][0]["root"].get("scriptAsm").is_none());
+    let compiled = &json["trees"][1];
+    assert!(compiled["script"]["instructions"].as_array().unwrap().len() > 3);
+    assert!(compiled["root"]["scriptAsm"].as_str().is_some());
+}
+
+#[test]
+fn taproot_leaf_scripts_have_ranges() {
+    let input = format!("tr({},{{pk({}),pk({})}})", TR_INTERNAL, XONLY_G, XONLY_2G);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let leaf = &json["trees"][1];
+    assert!(leaf["script"]["asm"]
+        .as_str()
+        .unwrap()
+        .contains("OP_CHECKSIG"));
+    let hex = leaf["script"]["hex"].as_str().unwrap();
+    assert_eq!(
+        leaf["root"]["scriptRange"],
+        serde_json::json!([0, hex.len() / 2])
+    );
+    // x-only keys are 32 bytes on the wire
+    assert_eq!(hex.len() / 2, 34);
+}
+
+#[test]
+fn sortedmulti_template_without_ranges() {
+    let input = format!("wsh(sortedmulti(2,{},{},{}))", KEY_A, KEY_B, KEY_C);
+    let json = serde_json::to_value(analyze_impl(&input, "descriptor").unwrap()).unwrap();
+    let root = &json["trees"][0]["root"];
+    assert!(root["template"]
+        .as_str()
+        .unwrap()
+        .contains("OP_CHECKMULTISIG"));
+    assert!(root.get("scriptAsm").is_none());
+}
+
+#[test]
+fn wildcard_descriptor_gets_concrete_ranges() {
+    let input = format!("wsh(and_v(v:pk({}/0/*),older(144)))", XPUB);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let root = &json["trees"][0]["root"];
+    assert!(root["scriptAsm"].as_str().unwrap().contains("OP_CSV"));
+    // derived key (not the xpub) appears in the script
+    let asm = root["scriptAsm"].as_str().unwrap();
+    assert!(!asm.contains("xpub"));
+}
+
+#[test]
 fn forced_modes_are_respected() {
     let policy = format!("and(pk({}),older(100))", KEY_A);
     assert!(analyze_impl(&policy, "descriptor").is_err());

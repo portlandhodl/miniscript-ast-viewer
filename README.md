@@ -17,6 +17,14 @@ ever leaves the page.
 - Renders every script as an **interactive AST**: expand/collapse, click or
   drive with the keyboard (`↑ ↓ ← →`, `enter`), and inspect each node
   (fragment, correctness type, keys/timelocks/hashes, meaning)
+- **Codepath visualizer**: the script is rendered opcode-by-opcode above the
+  tree; selecting an AST node lights up its exact byte range of the script,
+  plus the routing opcodes of its ancestors (`OP_IF`/`OP_NOTIF`/`OP_ELSE`…)
+  that activate that codepath. Click an opcode to jump to its AST node.
+- **Node inspector**: per-node script template (`<A> OP_BOOLOR <B>`), the
+  actually encoded subtree script with byte offsets, a clickable *parents*
+  breadcrumb, and *spend with* links that compute and highlight the sibling
+  conditions required to satisfy the selected node.
 - Shows script hex + assembly, mainnet/testnet addresses (derived at index 0
   for ranged descriptors), script size, static opcode count, max satisfaction
   weight, and the timelocks in play

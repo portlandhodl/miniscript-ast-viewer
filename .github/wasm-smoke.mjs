@@ -28,6 +28,17 @@ check("descriptor detected", d.inputKind === "descriptor");
 check("single tree", d.trees.length === 1);
 check("root fragment", d.trees[0].root.fragment === "and_v");
 
+// 2b. per-node script data: templates, asm, byte ranges, flat instructions
+const t = d.trees[0];
+check("tree has script info", Array.isArray(t.script?.instructions));
+check("instructions reassemble", t.script.instructions.map((i) => i.text).join(" ") === t.script.asm);
+check("root template", t.root.template === "<A> <B>");
+check("root covers whole script", t.root.scriptRange[0] === 0 && t.root.scriptRange[1] === t.script.hex.length / 2);
+const older = t.root.children.find((c) => c.fragment === "older");
+check("older template", older.template === "<n> OP_CHECKSEQUENCEVERIFY");
+check("older asm", older.scriptAsm.includes("OP_CSV"));
+check("older nested range", older.scriptRange[0] > 0 && older.scriptRange[1] <= t.root.scriptRange[1]);
+
 // 3. errors propagate
 let threw = false;
 try { m.analyze("garbage", "auto"); } catch { threw = true; }

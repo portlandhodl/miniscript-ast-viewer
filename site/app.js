@@ -181,25 +181,202 @@ function selectRow(row) {
   selectedRow = row;
   row.classList.add("selected");
   renderNodeDetail(row._ast);
+  highlightCodepath(row._ast);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Codepath visualization + spend analysis
+ * ------------------------------------------------------------------ */
+function ancestorIds(id) {
+  const parts = id.split(".");
+  const out = [];
+  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join("."));
+  return out;
+}
+
+function jumpTo(id) {
+  const entry = $("tree-container")._byId?.get(id);
+  if (!entry) return;
+  let li = entry.li;
+  while (li) {
+    toggleLi(li, false);
+    li = li.parentElement?.closest("li");
+  }
+  selectRow(entry.row);
+  entry.row.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+const fragBase = (f) => f.split(/[\s(]/)[0];
+const WRAPPERS = ["alt", "swap", "check", "dupif", "verify", "nonzero", "zero_not_equal"];
+
+/** ids that must be satisfied assuming `node` must be satisfied (excl. itself) */
+function downReq(node) {
+  const b = fragBase(node.fragment);
+  const kids = node.children || [];
+  const out = [];
+  const req = (n) => out.push(n.id, ...downReq(n));
+  if (["and_v", "and_b", "and"].includes(b)) kids.forEach(req);
+  else if (b === "and_or") { req(kids[0]); req(kids[1]); }
+  else if (WRAPPERS.includes(b) && kids[0]) req(kids[0]);
+  return out;
+}
+
+/** Walk up from `node`: siblings forced by and/and_or ancestors + notes. */
+function computeSpend(node, byId) {
+  const required = new Set(downReq(node));
+  const notes = [];
+  let cur = node;
+  while (cur.id.includes(".")) {
+    const pid = cur.id.slice(0, cur.id.lastIndexOf("."));
+    const p = byId.get(pid)?.node;
+    if (!p) break;
+    const b = fragBase(p.fragment);
+    const idx = Number(cur.id.slice(pid.length + 1));
+    const sibReq = (s) => { required.add(s.id); downReq(s).forEach((x) => required.add(x)); };
+    if (["and_v", "and_b", "and"].includes(b)) {
+      (p.children || []).forEach((c, i) => i !== idx && sibReq(c));
+    } else if (b === "and_or") {
+      if (idx === 0) sibReq(p.children[1]);
+      else if (idx === 1) sibReq(p.children[0]);
+      else notes.push("spend via the ELSE arm: the left arm of this and_or is NOT satisfied");
+    } else if (["thresh", "multi", "multi_a", "sortedmulti"].includes(b)) {
+      const m = p.fragment.match(/k=(\d+),n=(\d+)/);
+      if (m && Number(m[1]) > 1)
+        notes.push(`${b} needs ${m[1]}-of-${m[2]} here — pick ${m[1] - 1} more sibling(s)`);
+    }
+    cur = p;
+  }
+  required.delete(node.id);
+  return { required: [...required], notes };
+}
+
+/** Byte segments of `node`'s own opcodes (its range minus children's ranges). */
+function ownSegments(node) {
+  if (!node.scriptRange) return [];
+  const kids = (node.children || [])
+    .filter((c) => c.scriptRange)
+    .sort((a, b) => a.scriptRange[0] - b.scriptRange[0]);
+  const segs = [];
+  let cur = node.scriptRange[0];
+  for (const k of kids) {
+    if (k.scriptRange[0] > cur) segs.push([cur, k.scriptRange[0]]);
+    cur = Math.max(cur, k.scriptRange[1]);
+  }
+  if (cur < node.scriptRange[1]) segs.push([cur, node.scriptRange[1]]);
+  return segs;
+}
+
+function renderScriptViz(tree) {
+  const viz = $("script-viz");
+  viz.innerHTML = "";
+  if (!tree.script) {
+    viz.hidden = true;
+    return;
+  }
+  viz.hidden = false;
+  const strip = el("div", "viz-strip");
+  for (const ins of tree.script.instructions) {
+    const s = el("span", "viz-op", ins.text);
+    s.dataset.start = ins.start;
+    s.dataset.end = ins.end;
+    s.title = `${ins.text}   [${ins.start}..${ins.end}]`;
+    s.addEventListener("click", () => {
+      // select the deepest AST node whose range covers this instruction
+      const byId = $("tree-container")._byId;
+      let best = null;
+      for (const { node } of byId.values()) {
+        const r = node.scriptRange;
+        if (!r || r[0] > ins.start || ins.end > r[1]) continue;
+        if (!best || r[1] - r[0] < best.scriptRange[1] - best.scriptRange[0]) best = node;
+      }
+      if (best) jumpTo(best.id);
+    });
+    strip.appendChild(s);
+  }
+  viz.appendChild(strip);
+  viz.appendChild(
+    el("div", "viz-legend", "click an opcode to locate its AST node · select an AST node: green = its codepath · amber = ancestor routing opcodes")
+  );
+}
+
+/** Highlight the activated codepath of the selected node in the script viz. */
+function highlightCodepath(node) {
+  const ops = $("script-viz").querySelectorAll(".viz-op");
+  ops.forEach((o) => o.classList.remove("hl-own", "hl-path"));
+  if (!node.scriptRange) return;
+  const pathSegs = [];
+  for (const pid of ancestorIds(node.id)) {
+    const p = $("tree-container")._byId?.get(pid)?.node;
+    if (p) pathSegs.push(...ownSegments(p));
+  }
+  const inSegs = (s, e, segs) => segs.some(([a, b]) => a <= s && e <= b);
+  const [rs, re] = node.scriptRange;
+  ops.forEach((o) => {
+    const s = Number(o.dataset.start);
+    const e = Number(o.dataset.end);
+    if (rs <= s && e <= re) o.classList.add("hl-own");
+    else if (inSegs(s, e, pathSegs)) o.classList.add("hl-path");
+  });
 }
 
 function renderNodeDetail(node) {
   const d = $("node-detail");
+  const container = $("tree-container");
+  const byId = container._byId || new Map();
   d.innerHTML = "";
   const kv = el("div", "kv");
-  const add = (k, v, bright) => {
+  const add = (k, v, bright, copyText) => {
     kv.appendChild(el("div", "k", k));
     const ve = el("div", "v" + (bright ? " bright" : ""), v);
-    if (k === "value") ve.appendChild(copyBtn(() => v));
+    if (copyText) ve.appendChild(copyBtn(() => copyText));
     kv.appendChild(ve);
   };
   add("fragment", node.fragment, true);
   if (node.typeBase) add("type", node.typeBase);
-  if (node.value !== undefined) add("value", node.value);
+  if (node.value !== undefined) add("value", node.value, false, node.value);
+  if (node.template) add("template", node.template);
+  if (node.scriptAsm) add("script", node.scriptAsm, false, node.scriptAsm);
+  if (node.scriptRange) add("bytes", `[${node.scriptRange[0]}..${node.scriptRange[1]}]`);
   add("path", node.id);
   add("meaning", node.detail);
-  if (node.children?.length) add("children", String(node.children.length));
   d.appendChild(kv);
+
+  // ---- parents (clickable breadcrumb) ----
+  const anc = ancestorIds(node.id);
+  if (anc.length) {
+    const row = el("div", "chip-row");
+    row.appendChild(el("span", "chip-label", "parents:"));
+    for (const pid of anc) {
+      const e = byId.get(pid);
+      if (!e) continue;
+      const c = el("button", "chip parent", e.node.fragment);
+      c.title = `path ${pid}`;
+      c.addEventListener("click", () => jumpTo(pid));
+      row.appendChild(c);
+    }
+    d.appendChild(row);
+  }
+
+  // ---- spend path: required siblings/subtrees + branch notes ----
+  const { required, notes } = computeSpend(node, byId);
+  container
+    .querySelectorAll(".node-row.spend-req")
+    .forEach((r) => r.classList.remove("spend-req"));
+  for (const id of required) byId.get(id)?.row.classList.add("spend-req");
+  if (required.length) {
+    const row = el("div", "chip-row");
+    row.appendChild(el("span", "chip-label", "spend with:"));
+    for (const id of required) {
+      const e = byId.get(id);
+      if (!e) continue;
+      const c = el("button", "chip spend", e.node.fragment);
+      c.title = `path ${id}`;
+      c.addEventListener("click", () => jumpTo(id));
+      row.appendChild(c);
+    }
+    d.appendChild(row);
+  }
+  for (const n of notes) d.appendChild(el("div", "note", "⚠ " + n));
 }
 
 function visibleRows() {
@@ -344,6 +521,7 @@ function showTree(tree) {
   activeTree = tree;
   const container = $("tree-container");
   container.innerHTML = "";
+  renderScriptViz(tree);
   const byId = new Map();
   const ul = el("ul", "tree");
   ul.setAttribute("role", "tree");
