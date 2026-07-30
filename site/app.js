@@ -2,9 +2,10 @@
 import init, { analyze, engine_info } from "./pkg/miniscript_ast_viewer.js";
 
 /* ------------------------------------------------------------------ *
- *  Matrix backdrop: a vortex of characters swirls while the wasm
- *  engine boots; once loaded, every glyph glides to its column and
- *  the classic waterfall rain takes over.
+ *  Matrix backdrop: while the wasm engine boots, a swarm of glyphs
+ *  flows naturally inside a giant bitcoin ₿ silhouette — a full-screen
+ *  video-game style loader; once loaded, every glyph glides to its
+ *  column and the classic waterfall rain takes over.
  * ------------------------------------------------------------------ */
 function startRain() {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches)
@@ -13,39 +14,107 @@ function startRain() {
   const ctx = canvas.getContext("2d");
   const glyphs = "アカサタナハマヤラワ0123456789ABCDEF·:+*<>";
   const fontSize = 15;
-  const MORPH_MS = 1700; // total vortex -> waterfall transition
+  const MORPH_MS = 1700; // total ₿ -> waterfall transition
+  const CELL = 6; // ₿ silhouette sampling resolution (px)
   const rndGlyph = () => glyphs[(Math.random() * glyphs.length) | 0];
-  let w, h, cx, cy, maxRad;
-  let drops = []; // one per rain column
-  let phase = "vortex"; // vortex -> morph -> rain
+  const rndTone = () => {
+    const r = Math.random();
+    return r < 0.04 ? "#ffb000" : r < 0.15 ? "#b6ffb9" : r < 0.34 ? "#00b32d" : "#00ff41";
+  };
+  let w, h, cx, cy;
+  let drops = [];
+  let phase = "logo"; // logo -> morph -> rain
   let morphT0 = 0;
+  let maskGrid, maskW, maskH, maskPts; // ₿ silhouette
+
+  /* Rasterize a huge bitcoin ₿ and remember which cells it covers. */
+  function buildMask() {
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    const o = off.getContext("2d", { willReadFrequently: true });
+    const size = Math.min(w, h) * 0.62;
+    o.fillStyle = "#fff";
+    o.textAlign = "center";
+    o.textBaseline = "middle";
+    o.font = `900 ${size}px "Arial Black", Arial, Helvetica, sans-serif`;
+    o.fillText("B", cx, cy);
+    // find the glyph's true vertical extent so the two strokes of the
+    // bitcoin sign overshoot both ends, whatever the font metrics are
+    let probe = o.getImageData(0, 0, w, h).data;
+    let top = h, bot = 0;
+    for (let py = 0; py < h; py += 2)
+      for (let px = 0; px < w; px += 6)
+        if (probe[(py * w + px) * 4 + 3] > 40) {
+          if (py < top) top = py;
+          if (py > bot) bot = py;
+        }
+    const bw = o.measureText("B").width;
+    const barW = Math.max(5, size * 0.05);
+    const over = size * 0.07;
+    o.fillRect(cx - bw * 0.26 - barW / 2, top - over, barW, bot - top + over * 2);
+    o.fillRect(cx - bw * 0.02 - barW / 2, top - over, barW, bot - top + over * 2);
+    const img = o.getImageData(0, 0, w, h).data;
+    maskW = Math.ceil(w / CELL);
+    maskH = Math.ceil(h / CELL);
+    maskGrid = new Uint8Array(maskW * maskH);
+    maskPts = [];
+    for (let gy = 0; gy < maskH; gy++)
+      for (let gx = 0; gx < maskW; gx++) {
+        const px = Math.min(w - 1, gx * CELL + (CELL >> 1));
+        const py = Math.min(h - 1, gy * CELL + (CELL >> 1));
+        if (img[(py * w + px) * 4 + 3] > 40) {
+          maskGrid[gy * maskW + gx] = 1;
+          maskPts.push([gx * CELL + (CELL >> 1), gy * CELL + (CELL >> 1)]);
+        }
+      }
+  }
+
+  const inside = (x, y) => {
+    const gx = (x / CELL) | 0;
+    const gy = (y / CELL) | 0;
+    return gx >= 0 && gy >= 0 && gx < maskW && gy < maskH && maskGrid[gy * maskW + gx] === 1;
+  };
+
+  /* (Re)seed a glyph at a random spot inside the ₿. */
+  function spawn(d) {
+    const p = maskPts[(Math.random() * maskPts.length) | 0];
+    d.x = p[0] + (Math.random() - 0.5) * CELL;
+    d.y = p[1] + (Math.random() - 0.5) * CELL;
+    d.vx = (Math.random() - 0.5) * 0.8;
+    d.vy = (Math.random() - 0.5) * 0.8;
+    d.bias = Math.random() * Math.PI * 2;
+    d.tone = rndTone();
+    d.stuck = 0;
+    return d;
+  }
 
   function resize() {
     w = canvas.width = innerWidth;
     h = canvas.height = innerHeight;
     cx = w / 2;
     cy = h / 2;
-    maxRad = Math.hypot(w, h) * 0.42;
+    buildMask();
     const nCols = Math.ceil(w / fontSize);
-    const n = nCols * 2; // two drops per rain column
-    drops = Array.from({ length: n }, (_, i) => {
-      const old = drops[i];
-      return {
-        glyph: old?.glyph ?? rndGlyph(),
-        // vortex state (polar)
-        ang: old?.ang ?? Math.random() * Math.PI * 2,
-        rad: old?.rad ?? maxRad * (0.2 + 0.8 * Math.random()),
-        spin: old?.spin ?? 0.7 + Math.random() * 0.6,
-        // rain state (cartesian)
-        x: (i % nCols) * fontSize,
-        y: old?.y ?? Math.random() * h,
-        // morph endpoints (captured when the engine comes online)
-        sx: 0,
-        sy: 0,
-        ty: Math.random() * h,
-        delay: Math.random() * 500,
-      };
-    });
+    // enough glyphs to fill the ₿ (~1 per 110 px²), while keeping the
+    // eventual waterfall in the 2..6-drops-per-column range
+    const target = Math.max(
+      nCols * 2,
+      Math.min(nCols * 6, 1500, Math.round((maskPts.length * CELL * CELL) / 110))
+    );
+    drops.length = Math.min(drops.length, target);
+    for (let i = 0; i < target; i++) {
+      let d = drops[i];
+      if (!d)
+        d = drops[i] = {
+          glyph: rndGlyph(),
+          x: 0, y: Math.random() * h, vx: 0, vy: 0, bias: 0, tone: "#00ff41", stuck: 0,
+          // morph endpoints (captured when the engine comes online)
+          sx: 0, sy: 0, ty: Math.random() * h, delay: Math.random() * 500,
+        };
+      d.col = i % nCols; // rain column
+      if (phase === "logo" && !inside(d.x, d.y)) spawn(d);
+    }
     if (phase === "morph") {
       // resize mid-transition: snap straight into the waterfall
       for (const d of drops) d.y = d.ty;
@@ -55,28 +124,34 @@ function startRain() {
   resize();
   addEventListener("resize", resize);
 
-  function drawVortex() {
+  function drawLogo(t) {
     for (const d of drops) {
-      // differential rotation: fast near the singularity, lazy at the rim
-      d.ang += Math.min(0.14, 0.015 + 12 / d.rad) * d.spin;
-      d.rad *= 0.995;
-      if (d.rad < 26) {
-        // swallowed by the singularity — respawn at the rim
-        d.rad = maxRad * (0.7 + 0.3 * Math.random());
-        d.ang = Math.random() * Math.PI * 2;
+      // smooth pseudo-turbulent drift + a whisper of pull toward the core,
+      // so the swarm keeps circulating inside the ₿
+      const a =
+        Math.sin(d.x * 0.006 + t * 0.00035) * 1.8 +
+        Math.cos(d.y * 0.007 - t * 0.00027) * 1.8 +
+        d.bias * 0.35;
+      d.vx += Math.cos(a) * 0.09 + (cx - d.x) * 0.00006;
+      d.vy += Math.sin(a) * 0.09 + (cy - d.y) * 0.00006;
+      d.vx *= 0.92;
+      d.vy *= 0.92;
+      const nx = d.x + d.vx;
+      const ny = d.y + d.vy;
+      if (inside(nx, ny)) {
+        d.x = nx;
+        d.y = ny;
+        d.stuck = 0;
+      } else {
+        // bounced off the silhouette edge — let the flow re-aim us
+        d.vx *= -0.4;
+        d.vy *= -0.4;
+        if (++d.stuck > 40) spawn(d); // wedged in a crevice: reseed
       }
       if (Math.random() < 0.03) d.glyph = rndGlyph();
-      const x = cx + Math.cos(d.ang) * d.rad;
-      const y = cy + Math.sin(d.ang) * d.rad * 0.55; // tilted disc
-      ctx.fillStyle =
-        d.rad < maxRad * 0.25
-          ? Math.random() < 0.6
-            ? "#b6ffb9"
-            : "#00ff41"
-          : d.rad > maxRad * 0.7
-            ? "#00b32d"
-            : "#00ff41";
-      ctx.fillText(d.glyph, x, y);
+      if (Math.random() < 0.004) d.tone = rndTone();
+      ctx.fillStyle = d.tone;
+      ctx.fillText(d.glyph, d.x, d.y);
     }
   }
 
@@ -88,7 +163,7 @@ function startRain() {
       const e = k * k * (3 - 2 * k); // smoothstep
       if (Math.random() < 0.05) d.glyph = rndGlyph();
       ctx.fillStyle = Math.random() < 0.12 ? "#b6ffb9" : "#00ff41";
-      ctx.fillText(d.glyph, d.sx + (d.x - d.sx) * e, d.sy + (d.ty - d.sy) * e);
+      ctx.fillText(d.glyph, d.sx + (d.col * fontSize - d.sx) * e, d.sy + (d.ty - d.sy) * e);
     }
     if (done) {
       for (const d of drops) d.y = d.ty;
@@ -100,7 +175,7 @@ function startRain() {
     for (const d of drops) {
       if (Math.random() < 0.06) d.glyph = rndGlyph();
       ctx.fillStyle = Math.random() < 0.06 ? "#b6ffb9" : "#00ff41";
-      ctx.fillText(d.glyph, d.x, d.y);
+      ctx.fillText(d.glyph, d.col * fontSize, d.y);
       d.y = d.y > h && Math.random() > 0.975 ? 0 : d.y + fontSize;
     }
   }
@@ -112,7 +187,7 @@ function startRain() {
       ctx.fillStyle = "rgba(0,0,0,0.06)";
       ctx.fillRect(0, 0, w, h);
       ctx.font = `${fontSize}px monospace`;
-      if (phase === "vortex") drawVortex();
+      if (phase === "logo") drawLogo(t);
       else if (phase === "morph") drawMorph(t);
       else drawRain();
     }
@@ -121,14 +196,14 @@ function startRain() {
   requestAnimationFrame(frame);
 
   return {
-    // engine online: capture each glyph's vortex position and send it
+    // engine online: capture each glyph's spot in the ₿ and send it
     // gliding to its waterfall column
     loaded() {
-      if (phase !== "vortex") return;
+      if (phase !== "logo") return;
       morphT0 = performance.now();
       for (const d of drops) {
-        d.sx = cx + Math.cos(d.ang) * d.rad;
-        d.sy = cy + Math.sin(d.ang) * d.rad * 0.55;
+        d.sx = d.x;
+        d.sy = d.y;
         d.ty = Math.random() * h;
         d.delay = Math.random() * 500;
       }

@@ -15,12 +15,10 @@
   <canvas id="rain" aria-hidden="true"></canvas>
   <div class="scanlines" aria-hidden="true"></div>
 
-  <!-- boot loader: vortex swirls behind this until the wasm engine is online -->
+  <!-- boot loader: matrix glyphs flow inside a giant ₿ until the wasm engine is online -->
   <div id="loader" aria-hidden="true">
-    <div class="loader-box">
-      <div class="loader-title">MINISCRIPT://AST_BROWSER</div>
-      <div class="loader-status" id="loader-status">[ initializing wasm module — opening the matrix<span class="cursor">▌</span> ]</div>
-    </div>
+    <div class="loader-title">MINISCRIPT://AST_BROWSER</div>
+    <div class="loader-status" id="loader-status">Loading Rust WASM Engine ... This could take a few seconds.<span class="cursor">▌</span></div>
   </div>
 
   <header>
