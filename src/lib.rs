@@ -562,45 +562,34 @@ fn attach_scripts<Pk: MiniscriptKey + ToPublicKey, Ctx: ScriptContext>(
 
 /// Build the flat instruction view of a script for the opcode visualizer.
 fn script_info(script: &bitcoin::Script) -> ScriptInfo {
-    use miniscript::bitcoin::blockdata::script::Instruction;
     let asm = script.to_asm_string();
-    // Instruction display text is taken from the asm rendering itself so the
-    // visualizer always matches the raw script panel.
-    let mut tokens = asm.split(' ');
+    // Display text is the asm rendering of each instruction's own byte slice,
+    // so it always matches the raw script panel. (Consuming tokens from the
+    // full asm string positionally misaligns on OP_0: it iterates as an
+    // *empty* PushBytes but renders as a single token, with no hex part.)
     let mut instructions = Vec::new();
-    let mut prev: Option<(usize, String)> = None;
+    let mut prev: Option<usize> = None;
     for (pos, ins) in script.instruction_indices().filter_map(Result::ok) {
-        if let Some((p, text)) = prev.take() {
-            instructions.push(InstructionInfo {
-                text,
-                start: p,
-                end: pos,
-            });
+        let _ = ins;
+        if let Some(p) = prev {
+            instructions.push(instruction_info(script, p, pos));
         }
-        let text = match ins {
-            Instruction::Op(_) => tokens.next().unwrap_or_default().to_string(),
-            Instruction::PushBytes(_) => {
-                format!(
-                    "{} {}",
-                    tokens.next().unwrap_or_default(),
-                    tokens.next().unwrap_or_default()
-                )
-            }
-        };
-        prev = Some((pos, text));
+        prev = Some(pos);
     }
-    if let Some((p, text)) = prev {
-        instructions.push(InstructionInfo {
-            text,
-            start: p,
-            end: script.len(),
-        });
+    if let Some(p) = prev {
+        instructions.push(instruction_info(script, p, script.len()));
     }
     ScriptInfo {
         hex: script.as_bytes().to_hex_string(bitcoin::hex::Case::Lower),
         asm,
         instructions,
     }
+}
+
+/// One instruction's display text and byte range, rendered from its slice.
+fn instruction_info(script: &bitcoin::Script, start: usize, end: usize) -> InstructionInfo {
+    let text = bitcoin::Script::from_bytes(&script.as_bytes()[start..end]).to_asm_string();
+    InstructionInfo { text, start, end }
 }
 
 /// Serialize a concrete policy tree into an [`AstNode`].

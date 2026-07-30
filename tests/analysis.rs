@@ -210,6 +210,32 @@ fn script_ranges_templates_and_instructions() {
 }
 
 #[test]
+fn instruction_texts_align_on_empty_push() {
+    // OP_0 iterates as an *empty* PushBytes instruction but renders in asm as
+    // a single token ("OP_0", no hex part); positional token counting used to
+    // swallow the next token ("OP_0 OP_ELSE") and shift every later
+    // instruction, leaving a blank entry at the end.
+    let input = format!(
+        "wsh(thresh(2,pk({}),s:pk({}),snl:after(1765929600)))",
+        KEY_A, KEY_B
+    );
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let script = &json["trees"][0]["script"];
+    let asm = script["asm"].as_str().unwrap();
+    assert!(
+        asm.contains("OP_0 OP_ELSE"),
+        "expected OP_0 branch, got {asm}"
+    );
+    let instrs = script["instructions"].as_array().unwrap();
+    let joined: Vec<&str> = instrs.iter().map(|i| i["text"].as_str().unwrap()).collect();
+    assert_eq!(joined.join(" "), asm);
+    assert!(instrs.iter().any(|i| i["text"] == "OP_0"));
+    assert!(instrs
+        .iter()
+        .all(|i| !i["text"].as_str().unwrap().is_empty()));
+}
+
+#[test]
 fn policy_tree_has_no_script_compiled_tree_does() {
     let input = format!("or(pk({}),and(pk({}),older(144)))", KEY_A, KEY_B);
     let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
