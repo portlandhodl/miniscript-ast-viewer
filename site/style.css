@@ -36,11 +36,15 @@ html, body {
 #rain {
   position: fixed;
   inset: 0;
-  z-index: -2;
-  opacity: 0.55; /* bright while the boot vortex is active */
+  z-index: 3; /* in front of the page while booting: full-screen takeover */
+  pointer-events: none;
+  opacity: 1; /* solid while the boot vortex is active */
   transition: opacity 1.4s ease;
 }
-body.ready #rain { opacity: 0.22; }
+body.ready #rain {
+  z-index: -2; /* sink behind the page … */
+  opacity: 0.08; /* … and fade to a faint backdrop */
+}
 
 /* ---------- boot loader overlay ---------- */
 #loader {
@@ -52,10 +56,9 @@ body.ready #rain { opacity: 0.22; }
   align-items: center;
   justify-content: space-between;
   padding: 9vh 16px;
-  pointer-events: none;
   transition: opacity 0.9s ease;
 }
-body.ready #loader { opacity: 0; }
+body.ready #loader { opacity: 0; pointer-events: none; }
 .loader-title {
   color: var(--green);
   font-size: clamp(16px, 3.4vw, 26px);
@@ -521,5 +524,5 @@ footer .sep { margin: 0 8px; }
 @media (prefers-reduced-motion: reduce) {
   .cursor { animation: none; }
   #rain { display: none; }
-  #loader { transition: none; }
+  #loader { transition: none; background: var(--bg); } /* still a full-page takeover without the canvas */
 }

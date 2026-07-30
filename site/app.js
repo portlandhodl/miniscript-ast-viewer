@@ -94,6 +94,10 @@ function startRain() {
     h = canvas.height = innerHeight;
     cx = w / 2;
     cy = h / 2;
+    // resizing clears the canvas — repaint it black so the boot loader
+    // is an opaque full-page takeover from the very first frame
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
     buildMask();
     const nCols = Math.ceil(w / fontSize);
     // enough glyphs to fill the ₿ (~1 per 110 px²), while keeping the
