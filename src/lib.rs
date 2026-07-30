@@ -508,9 +508,19 @@ fn attach_scripts<Pk: MiniscriptKey + ToPublicKey, Ctx: ScriptContext>(
     ast.script_asm = Some(enc.to_asm_string());
     ast.script_range = find_subslice(root_bytes, bytes, search_from).map(|s| [s, s + bytes.len()]);
     let mut cursor = ast.script_range.map(|r| r[0]).unwrap_or(search_from);
-    for (child_ast, child_ms) in ast.children.iter_mut().zip(child_ms(&ms.node)) {
-        attach_scripts(child_ast, child_ms, root_bytes, cursor);
-        if let Some(r) = child_ast.script_range {
+    let children = child_ms(&ms.node);
+    // `and_or(A, B, C)` encodes its branches out of AST order
+    // (`<A> OP_NOTIF <C> OP_ELSE <B> OP_ENDIF`), so visit children in script
+    // order to keep the forward-only search cursor correct; otherwise the C
+    // branch (and its whole subtree, e.g. an after/older timelock) is missed.
+    let visit: Vec<usize> = if matches!(ms.node, Terminal::AndOr(..)) {
+        vec![0, 2, 1]
+    } else {
+        (0..children.len()).collect()
+    };
+    for i in visit {
+        attach_scripts(&mut ast.children[i], children[i], root_bytes, cursor);
+        if let Some(r) = ast.children[i].script_range {
             cursor = r[1];
         }
     }

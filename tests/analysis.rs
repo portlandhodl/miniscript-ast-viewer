@@ -267,3 +267,77 @@ fn forced_modes_are_respected() {
     assert!(analyze_impl(&policy, "descriptor").is_err());
     assert!(analyze_impl(&policy, "policy").is_ok());
 }
+
+#[test]
+fn and_or_timelock_branch_gets_script_ranges() {
+    // `and_or(A,B,C)` encodes out of AST order: `<A> OP_NOTIF <C> OP_ELSE <B>
+    // OP_ENDIF`. The C branch (typically an after/older timelock path) must
+    // still receive a byte range so the codepath highlighter works.
+    let input = format!(
+        "or(and(pk({}),sha256({})),and(pk({}),after(800000)))",
+        KEY_A, SHA256_TEST, KEY_B
+    );
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let tree = &json["trees"][1]; // compiled witness script
+    let hex = tree["script"]["hex"].as_str().unwrap();
+    let root = &tree["root"];
+    assert!(root["fragment"].as_str().unwrap().starts_with("and_or"));
+
+    // all three branches have ranges inside the root script
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for child in root["children"].as_array().unwrap() {
+        let s = child["scriptRange"][0].as_u64().unwrap() as usize;
+        let e = child["scriptRange"][1].as_u64().unwrap() as usize;
+        assert!(s < e && e <= hex.len() / 2, "branch range within script");
+        ranges.push((s, e));
+    }
+    ranges.sort_unstable();
+
+    // the gaps between the sorted branch ranges are exactly the routing
+    // opcodes: OP_NOTIF between A and C, OP_ELSE between C and B, OP_ENDIF
+    // closing the root
+    let re = root["scriptRange"][1].as_u64().unwrap() as usize;
+    let gap = |a: usize, b: usize| &hex[a * 2..b * 2];
+    assert_eq!(ranges[0].0, 0);
+    assert_eq!(gap(ranges[0].1, ranges[1].0), "64"); // OP_NOTIF
+    assert_eq!(gap(ranges[1].1, ranges[2].0), "67"); // OP_ELSE
+    assert_eq!(gap(ranges[2].1, re), "68"); // OP_ENDIF
+
+    // the after() leaf deep inside the C branch highlights: its range ends at
+    // the CLTV opcode
+    let and_v = &root["children"][2];
+    let after = &and_v["children"][1];
+    assert_eq!(after["fragment"], "after");
+    let s = after["scriptRange"][0].as_u64().unwrap() as usize;
+    let e = after["scriptRange"][1].as_u64().unwrap() as usize;
+    assert!(
+        hex[s * 2..e * 2].ends_with("b1"),
+        "after() range should end at OP_CHECKLOCKTIMEVERIFY"
+    );
+
+    // every node in the tree except a `check` directly under `verify` (whose
+    // final opcode is rewritten to its VERIFY form by the parent) has a range
+    fn assert_ranged(node: &serde_json::Value, under_verify: bool) {
+        let frag = node["fragment"].as_str().unwrap();
+        let is_check = frag.starts_with("check");
+        assert!(
+            !(under_verify && is_check) || node["scriptRange"].is_null(),
+            "check-under-verify must stay unranged"
+        );
+        if !(under_verify && is_check) {
+            assert!(
+                node["scriptRange"].is_array(),
+                "{frag} ({}) missing scriptRange",
+                node["id"].as_str().unwrap()
+            );
+        }
+        for c in node["children"]
+            .as_array()
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+        {
+            assert_ranged(c, frag.starts_with("verify"));
+        }
+    }
+    assert_ranged(root, false);
+}
