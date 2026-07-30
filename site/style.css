@@ -421,6 +421,61 @@ li.collapsed > ul { display: none; }
   outline: 1px dashed var(--amber);
   background: rgba(255, 176, 0, 0.09);
 }
+.node-row.path-leaf {
+  outline: 1px dashed var(--green);
+  background: rgba(0, 255, 65, 0.1);
+}
+.node-row.path-route {
+  outline: 1px dashed rgba(255, 176, 0, 0.45);
+  background: rgba(255, 176, 0, 0.05);
+}
+
+/* ---------- spend path permutations ---------- */
+.paths {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 42vh;
+  overflow: auto;
+}
+.path-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+  text-align: left;
+  border: 1px solid var(--green-dark);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-shadow: none;
+  padding: 4px 8px;
+}
+.path-row:hover:not(.active) { background: var(--green-faint); box-shadow: none; }
+.path-row.active {
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.12);
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.3);
+}
+.path-num { color: var(--text-dim); font-size: 11px; }
+.path-row.active .path-num { color: var(--green); }
+.path-chip {
+  border: 1px solid var(--green-dark);
+  color: var(--green-dim);
+  padding: 0 6px;
+  font-size: 11px;
+}
+.path-chip.cat-key { color: var(--cyan); border-color: rgba(0, 229, 255, 0.35); }
+.path-chip.cat-time { color: var(--amber); border-color: rgba(255, 176, 0, 0.4); }
+.path-chip.cat-hash { color: var(--violet); border-color: rgba(194, 107, 255, 0.4); }
+.paths-note {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.08em;
+}
 .chip-row {
   margin-top: 9px;
   display: flex;

@@ -219,6 +219,7 @@ const fragCat = (frag) => {
 
 let selectedRow = null;
 let activeTree = null; // { label, root }
+let selectedPathRow = null; // active row in the spend-paths list
 
 function renderNode(node, byId) {
   const li = el("li");
@@ -273,6 +274,7 @@ function setTreeDepth(li, depth) {
 
 function selectRow(row) {
   if (selectedRow) selectedRow.classList.remove("selected");
+  clearPathHighlight();
   selectedRow = row;
   row.classList.add("selected");
   renderNodeDetail(row._ast);
@@ -412,6 +414,119 @@ function highlightCodepath(node) {
     if (rs <= s && e <= re) o.classList.add("hl-own");
     else if (inSegs(s, e, pathSegs)) o.classList.add("hl-path");
   });
+}
+
+/* ------------------------------------------------------------------ *
+ *  Spend-path permutations: every distinct way to satisfy the active
+ *  tree. Selecting a path lights up the opcodes it executes (green =
+ *  conditions, amber = routing) and the AST members it uses.
+ * ------------------------------------------------------------------ */
+function leafLabel(node) {
+  const f = fragBase(node.fragment);
+  const v = node.value;
+  if (v === undefined) return f;
+  if (v.length <= 12) return `${f}(${v})`;
+  return `${f}(…${v.slice(-8)})`;
+}
+
+/** Highlight every opcode executed by a spend path (multi-leaf codepath). */
+function highlightSpendPath(leaves) {
+  const ops = $("script-viz").querySelectorAll(".viz-op");
+  ops.forEach((o) => o.classList.remove("hl-own", "hl-path"));
+  const ownSegs = [];
+  const pathSegs = [];
+  const anc = new Set();
+  for (const n of leaves) {
+    if (n.scriptRange) ownSegs.push(n.scriptRange);
+    for (const pid of ancestorIds(n.id)) anc.add(pid);
+  }
+  for (const pid of anc) {
+    const p = $("tree-container")._byId?.get(pid)?.node;
+    if (p) pathSegs.push(...ownSegments(p));
+  }
+  const inSegs = (s, e, segs) => segs.some(([a, b]) => a <= s && e <= b);
+  ops.forEach((o) => {
+    const s = Number(o.dataset.start);
+    const e = Number(o.dataset.end);
+    if (inSegs(s, e, ownSegs)) o.classList.add("hl-own");
+    else if (inSegs(s, e, pathSegs)) o.classList.add("hl-path");
+  });
+}
+
+function clearPathHighlight() {
+  selectedPathRow = null;
+  $("paths-body")
+    .querySelectorAll(".path-row.active")
+    .forEach((r) => r.classList.remove("active"));
+  $("tree-container")
+    .querySelectorAll(".node-row.path-leaf, .node-row.path-route")
+    .forEach((r) => r.classList.remove("path-leaf", "path-route"));
+}
+
+/** (De)select a spend path: highlight its opcodes + AST members. */
+function togglePath(row, path) {
+  const wasActive = row.classList.contains("active");
+  clearPathHighlight();
+  if (wasActive) {
+    // deselecting: restore the viz to the selected node's codepath
+    if (selectedRow) highlightCodepath(selectedRow._ast);
+    return;
+  }
+  row.classList.add("active");
+  selectedPathRow = row;
+  const byId = $("tree-container")._byId;
+  // path selection supersedes the per-node "spend with" markings
+  $("tree-container")
+    .querySelectorAll(".node-row.spend-req")
+    .forEach((r) => r.classList.remove("spend-req"));
+  const leaves = path.nodes.map((id) => byId.get(id)).filter(Boolean);
+  const anc = new Set();
+  for (const { li, node, row: r } of leaves) {
+    // expand collapsed ancestors so every highlighted row is visible
+    let p = li.parentElement?.closest("li");
+    while (p) {
+      toggleLi(p, false);
+      p = p.parentElement?.closest("li");
+    }
+    r.classList.add("path-leaf");
+    for (const pid of ancestorIds(node.id)) anc.add(pid);
+  }
+  for (const pid of anc) byId.get(pid)?.row.classList.add("path-route");
+  highlightSpendPath(leaves.map((e) => e.node));
+  row.scrollIntoView({ block: "nearest" });
+}
+
+function renderPaths(tree) {
+  const body = $("paths-body");
+  body.innerHTML = "";
+  selectedPathRow = null;
+  const pl = tree.paths;
+  if (!pl || !pl.items.length) {
+    body.appendChild(el("span", "dim", "no spend paths for this tree"));
+    return;
+  }
+  const byId = $("tree-container")._byId || new Map();
+  pl.items.forEach((p, i) => {
+    const row = el("button", "path-row");
+    row.appendChild(el("span", "path-num", `#${i + 1}`));
+    const nodes = p.nodes.map((id) => byId.get(id)?.node).filter(Boolean);
+    if (nodes.length) {
+      for (const n of nodes)
+        row.appendChild(el("span", "path-chip " + fragCat(n.fragment), leafLabel(n)));
+    } else {
+      row.appendChild(el("span", "dim", "always satisfiable"));
+    }
+    row.title = "highlight this spend path";
+    row.addEventListener("click", () => togglePath(row, p));
+    body.appendChild(row);
+  });
+  const total = pl.capped && pl.total >= 1000000 ? "1000000+" : pl.total;
+  const head = pl.capped
+    ? `showing first ${pl.items.length} of ${total} paths`
+    : `${pl.total} way(s) to spend`;
+  body.appendChild(
+    el("div", "paths-note", head + " · select a path: green = conditions · amber = routing opcodes")
+  );
 }
 
 function renderNodeDetail(node) {
@@ -623,6 +738,7 @@ function showTree(tree) {
   ul.appendChild(renderNode(tree.root, byId));
   container.appendChild(ul);
   container._byId = byId;
+  renderPaths(tree);
   // default: expand two levels
   const rootLi = ul.firstElementChild;
   setTreeDepth(rootLi, 2);

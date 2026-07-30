@@ -268,6 +268,181 @@ fn forced_modes_are_respected() {
     assert!(analyze_impl(&policy, "policy").is_ok());
 }
 
+/// Collect every AST node id of a tree JSON (depth-first).
+fn collect_ids(node: &serde_json::Value, out: &mut Vec<String>) {
+    out.push(node["id"].as_str().unwrap().to_string());
+    if let Some(ch) = node["children"].as_array() {
+        for c in ch {
+            collect_ids(c, out);
+        }
+    }
+}
+
+/// Assert that every node id referenced by a tree's spend paths exists in
+/// the tree's AST.
+fn assert_path_ids_exist(tree: &serde_json::Value) {
+    let mut ids = Vec::new();
+    collect_ids(&tree["root"], &mut ids);
+    for path in tree["paths"]["items"].as_array().unwrap() {
+        for id in path["nodes"].as_array().unwrap() {
+            assert!(
+                ids.contains(&id.as_str().unwrap().to_string()),
+                "path references unknown node id {id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spend_paths_and_v_single() {
+    // a plain conjunction has exactly one spend path, listing both leaves
+    let input = format!("wsh(and_v(v:pk({}),older(144)))", KEY_A);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let paths = &json["trees"][0]["paths"];
+    assert_eq!(paths["total"], 1);
+    assert_eq!(paths["capped"], false);
+    let items = paths["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    // verify(check(pk_k)) leaf + older leaf
+    assert_eq!(
+        items[0]["nodes"],
+        serde_json::json!(["0.0.0.0".to_string(), "0.1".to_string()])
+    );
+    assert_path_ids_exist(&json["trees"][0]);
+}
+
+#[test]
+fn spend_paths_or_escrow_two_paths() {
+    let input = format!("or(pk({}),and(pk({}),older(144)))", KEY_A, KEY_B);
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+
+    // the policy tree carries no paths; the compiled miniscript tree does
+    assert!(json["trees"][0].get("paths").is_none());
+    let tree = &json["trees"][1];
+    let paths = &tree["paths"];
+    assert_eq!(paths["total"], 2);
+    assert_eq!(paths["capped"], false);
+    let items = paths["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    // one path satisfies only the left key, the other the key + timelock
+    let mut lens: Vec<usize> = items
+        .iter()
+        .map(|p| p["nodes"].as_array().unwrap().len())
+        .collect();
+    lens.sort_unstable();
+    assert_eq!(lens, vec![1, 2]);
+    assert_path_ids_exist(tree);
+}
+
+#[test]
+fn spend_paths_and_or_htlc() {
+    // or(and(pk(A),sha256(H)),and(pk(B),after(N))) compiles to an and_or
+    let input = format!(
+        "or(and(pk({}),sha256({})),and(pk({}),after(800000)))",
+        KEY_A, SHA256_TEST, KEY_B
+    );
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let tree = &json["trees"][1];
+    assert!(tree["root"]["fragment"]
+        .as_str()
+        .unwrap()
+        .starts_with("and_or"));
+    let paths = &tree["paths"];
+    assert_eq!(paths["total"], 2);
+    let items = paths["items"].as_array().unwrap();
+    // one path = key + sha256 preimage, other = key + CLTV
+    for p in items {
+        assert_eq!(p["nodes"].as_array().unwrap().len(), 2);
+    }
+    assert_path_ids_exist(tree);
+}
+
+#[test]
+fn spend_paths_thresh_2_of_3() {
+    let input = format!(
+        "wsh(thresh(2,pk({}),s:pk({}),s:pk({})))",
+        KEY_A, KEY_B, KEY_C
+    );
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let paths = &json["trees"][0]["paths"];
+    // C(3,2) = 3 ways, each satisfying two pk leaves
+    assert_eq!(paths["total"], 3);
+    assert_eq!(paths["capped"], false);
+    for p in paths["items"].as_array().unwrap() {
+        assert_eq!(p["nodes"].as_array().unwrap().len(), 2);
+    }
+    assert_path_ids_exist(&json["trees"][0]);
+}
+
+#[test]
+fn spend_paths_sortedmulti_combinations() {
+    let input = format!("wsh(sortedmulti(2,{},{},{}))", KEY_A, KEY_B, KEY_C);
+    let json = serde_json::to_value(analyze_impl(&input, "descriptor").unwrap()).unwrap();
+    let paths = &json["trees"][0]["paths"];
+    assert_eq!(paths["total"], 3);
+    let combos: Vec<Vec<String>> = paths["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            p["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        combos,
+        vec![
+            vec!["0.0".to_string(), "0.1".to_string()],
+            vec!["0.0".to_string(), "0.2".to_string()],
+            vec!["0.1".to_string(), "0.2".to_string()],
+        ]
+    );
+}
+
+#[test]
+fn spend_paths_bare_multi() {
+    let input = format!("wsh(multi(2,{},{},{}))", KEY_A, KEY_B, KEY_C);
+    let json = serde_json::to_value(analyze_impl(&input, "descriptor").unwrap()).unwrap();
+    let paths = &json["trees"][0]["paths"];
+    assert_eq!(paths["total"], 3);
+    for p in paths["items"].as_array().unwrap() {
+        assert_eq!(p["nodes"].as_array().unwrap().len(), 2);
+    }
+    assert_path_ids_exist(&json["trees"][0]);
+}
+
+#[test]
+fn spend_paths_capped_when_huge() {
+    // C(8,4) = 70 paths exceed the display cap of 64
+    let input = format!(
+        "wsh(thresh(4,pk({0}),s:pk({1}),s:pk({2}),s:pk({0}),s:pk({1}),s:pk({2}),s:pk({0}),s:pk({1})))",
+        KEY_A, KEY_B, KEY_C
+    );
+    let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+    let paths = &json["trees"][0]["paths"];
+    assert_eq!(paths["total"], 70);
+    assert_eq!(paths["capped"], true);
+    assert_eq!(paths["items"].as_array().unwrap().len(), 64);
+}
+
+#[test]
+fn spend_paths_single_key_descriptors() {
+    for input in [
+        format!("pkh({})", KEY_A),
+        format!("wpkh({})", KEY_A),
+        format!("tr({})", TR_INTERNAL),
+    ] {
+        let json = serde_json::to_value(analyze_impl(&input, "auto").unwrap()).unwrap();
+        let paths = &json["trees"][0]["paths"];
+        assert_eq!(paths["total"], 1, "{input}");
+        assert_eq!(paths["items"][0]["nodes"], serde_json::json!(["0"]));
+    }
+}
+
 #[test]
 fn and_or_timelock_branch_gets_script_ranges() {
     // `and_or(A,B,C)` encodes out of AST order: `<A> OP_NOTIF <C> OP_ELSE <B>

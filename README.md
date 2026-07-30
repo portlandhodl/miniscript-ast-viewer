@@ -21,6 +21,9 @@ ever leaves the page.
   tree; selecting an AST node lights up its exact byte range of the script,
   plus the routing opcodes of its ancestors (`OP_IF`/`OP_NOTIF`/`OP_ELSE`…)
   that activate that codepath. Click an opcode to jump to its AST node.
+- **Spend-path permutations**: every distinct way to satisfy the script is
+  enumerated (capped at 64 per tree). Selecting a path highlights the opcodes
+  it executes (conditions + routing) and the AST members it uses.
 - **Node inspector**: per-node script template (`<A> OP_BOOLOR <B>`), the
   actually encoded subtree script with byte offsets, a clickable *parents*
   breadcrumb, and *spend with* links that compute and highlight the sibling

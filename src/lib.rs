@@ -58,6 +58,40 @@ pub struct Tree {
     root: AstNode,
     #[serde(skip_serializing_if = "Option::is_none")]
     script: Option<ScriptInfo>,
+    /// Every distinct way to satisfy the script (absent for policy trees).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paths: Option<PathList>,
+}
+
+/// Enumerated spending paths of a tree: each entry is one distinct set of
+/// condition leaves whose satisfaction spends the output.
+#[derive(Serialize)]
+pub struct PathList {
+    /// Total number of distinct paths (may exceed `items.len()` when capped).
+    total: usize,
+    /// Whether `items` was truncated to the display cap.
+    capped: bool,
+    items: Vec<SpendPath>,
+}
+
+impl PathList {
+    /// A tree consisting of a single condition (single-key descriptors).
+    fn single() -> Self {
+        PathList {
+            total: 1,
+            capped: false,
+            items: vec![SpendPath {
+                nodes: vec!["0".to_string()],
+            }],
+        }
+    }
+}
+
+/// One way to satisfy a script: the AST ids of the condition leaves that
+/// must be satisfied (empty for an unconditionally satisfiable script).
+#[derive(Serialize)]
+pub struct SpendPath {
+    nodes: Vec<String>,
 }
 
 /// Flat view of a tree's concrete script for the opcode visualizer.
@@ -746,6 +780,239 @@ fn sorted_multi_ast<Pk: MiniscriptKey, Ctx: ScriptContext>(
     }
 }
 
+/// Max number of spend paths shipped to the UI per tree.
+const MAX_SPEND_PATHS: usize = 64;
+/// Saturation point for arithmetic path counting.
+const COUNT_CAP: usize = 1_000_000;
+
+fn sat_add(a: usize, b: usize) -> usize {
+    (a + b).min(COUNT_CAP)
+}
+
+fn sat_mul(a: usize, b: usize) -> usize {
+    (a * b).min(COUNT_CAP)
+}
+
+/// Saturating binomial coefficient C(n, k).
+fn binom_sat(n: usize, k: usize) -> usize {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut acc = 1usize;
+    for i in 0..k {
+        acc = sat_mul(acc, n - i) / (i + 1);
+    }
+    acc
+}
+
+/// Number of distinct satisfaction paths of a miniscript (saturating).
+fn count_paths<Pk: MiniscriptKey, Ctx: ScriptContext>(ms: &Miniscript<Pk, Ctx>) -> usize {
+    use Terminal::*;
+    let c = count_paths;
+    match &ms.node {
+        True => 1,
+        False => 0,
+        PkK(_) | PkH(_) | RawPkH(_) | After(_) | Older(_) | Sha256(_) | Hash256(_)
+        | Ripemd160(_) | Hash160(_) => 1,
+        Alt(s) | Swap(s) | Check(s) | DupIf(s) | Verify(s) | NonZero(s) | ZeroNotEqual(s) => c(s),
+        AndV(a, b) | AndB(a, b) => sat_mul(c(a), c(b)),
+        AndOr(a, b, cc) => sat_add(sat_mul(c(a), c(b)), c(cc)),
+        // or_b executes both branches: left only, right only, or both
+        OrB(a, b) => sat_add(sat_add(c(a), c(b)), sat_mul(c(a), c(b))),
+        OrC(a, b) | OrD(a, b) | OrI(a, b) => sat_add(c(a), c(b)),
+        Thresh(th) => {
+            // Sum over all k-subsets of the product of the members' path
+            // counts — the degree-k elementary symmetric polynomial, computed
+            // by DP so huge thresholds stay cheap.
+            let mut e = vec![0usize; th.k() + 1];
+            e[0] = 1;
+            for sub in th.iter() {
+                let cs = c(sub);
+                for j in (1..=th.k()).rev() {
+                    e[j] = sat_add(e[j], sat_mul(e[j - 1], cs));
+                }
+            }
+            e[th.k()]
+        }
+        // `Multi` and `MultiA` thresholds have distinct const generics, so
+        // they cannot share a match-arm binding
+        Multi(th) => binom_sat(th.n(), th.k()),
+        MultiA(th) => binom_sat(th.n(), th.k()),
+    }
+}
+
+/// Cartesian product of two path sets (each result is the union of a path
+/// from `a` and a path from `b`), capped at `limit`.
+fn cross(a: Vec<Vec<String>>, b: Vec<Vec<String>>, limit: usize) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for pa in &a {
+        for pb in &b {
+            if out.len() >= limit {
+                return out;
+            }
+            let mut p = pa.clone();
+            p.extend(pb.iter().cloned());
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Enumerate the satisfaction paths of a miniscript, capped at `limit`.
+/// Each path is the list of AST ids of the condition leaves to satisfy,
+/// using the same dotted-id scheme as [`ms_to_ast`].
+fn gen_paths<Pk: MiniscriptKey, Ctx: ScriptContext>(
+    ms: &Miniscript<Pk, Ctx>,
+    path: &str,
+    limit: usize,
+) -> Vec<Vec<String>> {
+    use Terminal::*;
+    let cid = |i: usize| format!("{}.{}", path, i);
+    let g = |sub: &Arc<Miniscript<Pk, Ctx>>, p: String| gen_paths(sub, &p, limit);
+    match &ms.node {
+        True => vec![vec![]],
+        False => vec![],
+        PkK(_) | PkH(_) | RawPkH(_) | After(_) | Older(_) | Sha256(_) | Hash256(_)
+        | Ripemd160(_) | Hash160(_) => vec![vec![path.to_string()]],
+        Alt(s) | Swap(s) | Check(s) | DupIf(s) | Verify(s) | NonZero(s) | ZeroNotEqual(s) => {
+            g(s, cid(0))
+        }
+        AndV(a, b) | AndB(a, b) => cross(g(a, cid(0)), g(b, cid(1)), limit),
+        AndOr(a, b, cc) => {
+            let mut out = cross(g(a, cid(0)), g(b, cid(1)), limit);
+            out.extend(g(cc, cid(2)).into_iter().take(limit - out.len()));
+            out
+        }
+        OrB(a, b) => {
+            let (pa, pb) = (g(a, cid(0)), g(b, cid(1)));
+            let mut out: Vec<Vec<String>> = Vec::new();
+            out.extend(pa.iter().take(limit).cloned());
+            out.extend(pb.iter().take(limit - out.len()).cloned());
+            out.extend(cross(pa, pb, limit).into_iter().take(limit - out.len()));
+            out
+        }
+        OrC(a, b) | OrD(a, b) | OrI(a, b) => {
+            let mut out = g(a, cid(0));
+            out.extend(g(b, cid(1)).into_iter().take(limit - out.len()));
+            out
+        }
+        Thresh(th) => {
+            let subs: Vec<&Miniscript<Pk, Ctx>> = th.iter().map(AsRef::as_ref).collect();
+            let mut out = Vec::new();
+            thresh_gen(&subs, th.k(), 0, vec![vec![]], path, limit, &mut out);
+            out
+        }
+        Multi(th) => {
+            let mut out = Vec::new();
+            key_combos(th.n(), th.k(), 0, &mut Vec::new(), path, limit, &mut out);
+            out
+        }
+        MultiA(th) => {
+            let mut out = Vec::new();
+            key_combos(th.n(), th.k(), 0, &mut Vec::new(), path, limit, &mut out);
+            out
+        }
+    }
+}
+
+/// Recursive helper for `thresh`: choose `need` of the `subs[start..]`
+/// members to satisfy; `prefix` is the cross product accumulated so far.
+fn thresh_gen<Pk: MiniscriptKey, Ctx: ScriptContext>(
+    subs: &[&Miniscript<Pk, Ctx>],
+    need: usize,
+    start: usize,
+    prefix: Vec<Vec<String>>,
+    path: &str,
+    limit: usize,
+    out: &mut Vec<Vec<String>>,
+) {
+    if out.len() >= limit || need > subs.len() - start {
+        return;
+    }
+    if need == 0 {
+        out.extend(prefix.into_iter().take(limit - out.len()));
+        return;
+    }
+    for i in start..=subs.len() - need {
+        let sp = gen_paths(subs[i], &format!("{}.{}", path, i), limit);
+        if sp.is_empty() {
+            continue; // unsatisfiable member can never be chosen
+        }
+        let next = cross(prefix.clone(), sp, limit);
+        thresh_gen(subs, need - 1, i + 1, next, path, limit, out);
+    }
+}
+
+/// k-of-n multisig paths: every combination of key-leaf ids.
+fn key_combos(
+    n: usize,
+    need: usize,
+    start: usize,
+    prefix: &mut Vec<String>,
+    path: &str,
+    limit: usize,
+    out: &mut Vec<Vec<String>>,
+) {
+    if out.len() >= limit {
+        return;
+    }
+    if need == 0 {
+        out.push(prefix.clone());
+        return;
+    }
+    for i in start..=n - need {
+        prefix.push(format!("{}.{}", path, i));
+        key_combos(n, need - 1, i + 1, prefix, path, limit, out);
+        prefix.pop();
+    }
+}
+
+/// Dedupe path sets (e.g. `or_b(true, pk)` makes the "both" case coincide
+/// with a single-branch path).
+fn dedupe(items: &mut Vec<Vec<String>>) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|p| seen.insert(p.join(" ")));
+}
+
+/// Full [`PathList`] for a miniscript tree (root id "0").
+fn spend_paths_ms<Pk: MiniscriptKey, Ctx: ScriptContext>(ms: &Miniscript<Pk, Ctx>) -> PathList {
+    let mut total = count_paths(ms);
+    let mut items = gen_paths(ms, "0", MAX_SPEND_PATHS);
+    dedupe(&mut items);
+    let capped = total > MAX_SPEND_PATHS;
+    if !capped {
+        total = items.len();
+    }
+    PathList {
+        total,
+        capped,
+        items: items.into_iter().map(|nodes| SpendPath { nodes }).collect(),
+    }
+}
+
+/// Full [`PathList`] for a `sortedmulti` tree: every k-of-n key combination.
+fn sorted_multi_paths<Pk: MiniscriptKey, Ctx: ScriptContext>(
+    sm: &SortedMultiVec<Pk, Ctx>,
+) -> PathList {
+    let mut items = Vec::new();
+    key_combos(
+        sm.n(),
+        sm.k(),
+        0,
+        &mut Vec::new(),
+        "0",
+        MAX_SPEND_PATHS,
+        &mut items,
+    );
+    let total = binom_sat(sm.n(), sm.k());
+    PathList {
+        total,
+        capped: items.len() < total,
+        items: items.into_iter().map(|nodes| SpendPath { nodes }).collect(),
+    }
+}
+
 /// Accumulators shared by the tree-extraction passes.
 struct TreeSink<'a> {
     trees: &'a mut Vec<Tree>,
@@ -785,6 +1052,7 @@ fn push_ms_tree<Pk, Ctx, CPk, CCtx>(
         label,
         root,
         script,
+        paths: Some(spend_paths_ms(ms)),
     });
 }
 
@@ -808,6 +1076,7 @@ fn extract_wsh_trees(
             label: multi_label.to_string(),
             root: sorted_multi_ast(sm, "0"),
             script: None,
+            paths: Some(sorted_multi_paths(sm)),
         }),
     }
 }
@@ -838,6 +1107,7 @@ fn extract_trees(
             )
             .with_template("OP_DUP OP_HASH160 <hash160(key)> OP_EQUALVERIFY OP_CHECKSIG"),
             script: None,
+            paths: Some(PathList::single()),
         }),
         Descriptor::Wpkh(w) => sink.trees.push(Tree {
             label: "P2WPKH Key".into(),
@@ -850,6 +1120,7 @@ fn extract_trees(
             )
             .with_template("OP_0 <hash160(key)> (witness program)"),
             script: None,
+            paths: Some(PathList::single()),
         }),
         Descriptor::Sh(sh) => {
             let csh = concrete.and_then(|c| match c {
@@ -881,6 +1152,7 @@ fn extract_trees(
                     )
                     .with_template("OP_0 <hash160(key)> (witness program)"),
                     script: None,
+                    paths: Some(PathList::single()),
                 }),
                 ShInner::Ms(ms) => {
                     let cms = csh.and_then(|s| match s.as_inner() {
@@ -893,6 +1165,7 @@ fn extract_trees(
                     label: "P2SH Sorted Multisig".into(),
                     root: sorted_multi_ast(sm, "0"),
                     script: None,
+                    paths: Some(sorted_multi_paths(sm)),
                 }),
             }
         }
@@ -921,6 +1194,7 @@ fn extract_trees(
                 )
                 .with_template("OP_1 <tweaked x-only key> (key-path spend)"),
                 script: None,
+                paths: Some(PathList::single()),
             });
             let ctr = concrete.and_then(|c| match c {
                 Descriptor::Tr(t) => Some(t),
@@ -1058,6 +1332,7 @@ fn analyze_as_policy(s: &str) -> Result<Analysis, String> {
         label: "Policy AST".into(),
         root: policy_to_ast(&pol, "0".to_string()),
         script: None,
+        paths: None,
     };
 
     // Timelocks are collected from the compiled miniscript by descriptor_analysis.
