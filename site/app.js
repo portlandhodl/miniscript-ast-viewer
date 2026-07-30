@@ -2,44 +2,139 @@
 import init, { analyze, engine_info } from "./pkg/miniscript_ast_viewer.js";
 
 /* ------------------------------------------------------------------ *
- *  Matrix rain backdrop
+ *  Matrix backdrop: a vortex of characters swirls while the wasm
+ *  engine boots; once loaded, every glyph glides to its column and
+ *  the classic waterfall rain takes over.
  * ------------------------------------------------------------------ */
 function startRain() {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches)
+    return { loaded() {} };
   const canvas = document.getElementById("rain");
   const ctx = canvas.getContext("2d");
   const glyphs = "アカサタナハマヤラワ0123456789ABCDEF·:+*<>";
   const fontSize = 15;
-  let columns = [];
-  let w, h;
+  const MORPH_MS = 1700; // total vortex -> waterfall transition
+  const rndGlyph = () => glyphs[(Math.random() * glyphs.length) | 0];
+  let w, h, cx, cy, maxRad;
+  let drops = []; // one per rain column
+  let phase = "vortex"; // vortex -> morph -> rain
+  let morphT0 = 0;
 
   function resize() {
     w = canvas.width = innerWidth;
     h = canvas.height = innerHeight;
-    const n = Math.ceil(w / fontSize);
-    columns = Array.from({ length: n }, () => Math.floor((Math.random() * h) / fontSize));
+    cx = w / 2;
+    cy = h / 2;
+    maxRad = Math.hypot(w, h) * 0.42;
+    const nCols = Math.ceil(w / fontSize);
+    const n = nCols * 2; // two drops per rain column
+    drops = Array.from({ length: n }, (_, i) => {
+      const old = drops[i];
+      return {
+        glyph: old?.glyph ?? rndGlyph(),
+        // vortex state (polar)
+        ang: old?.ang ?? Math.random() * Math.PI * 2,
+        rad: old?.rad ?? maxRad * (0.2 + 0.8 * Math.random()),
+        spin: old?.spin ?? 0.7 + Math.random() * 0.6,
+        // rain state (cartesian)
+        x: (i % nCols) * fontSize,
+        y: old?.y ?? Math.random() * h,
+        // morph endpoints (captured when the engine comes online)
+        sx: 0,
+        sy: 0,
+        ty: Math.random() * h,
+        delay: Math.random() * 500,
+      };
+    });
+    if (phase === "morph") {
+      // resize mid-transition: snap straight into the waterfall
+      for (const d of drops) d.y = d.ty;
+      phase = "rain";
+    }
   }
   resize();
   addEventListener("resize", resize);
+
+  function drawVortex() {
+    for (const d of drops) {
+      // differential rotation: fast near the singularity, lazy at the rim
+      d.ang += Math.min(0.14, 0.015 + 12 / d.rad) * d.spin;
+      d.rad *= 0.995;
+      if (d.rad < 26) {
+        // swallowed by the singularity — respawn at the rim
+        d.rad = maxRad * (0.7 + 0.3 * Math.random());
+        d.ang = Math.random() * Math.PI * 2;
+      }
+      if (Math.random() < 0.03) d.glyph = rndGlyph();
+      const x = cx + Math.cos(d.ang) * d.rad;
+      const y = cy + Math.sin(d.ang) * d.rad * 0.55; // tilted disc
+      ctx.fillStyle =
+        d.rad < maxRad * 0.25
+          ? Math.random() < 0.6
+            ? "#b6ffb9"
+            : "#00ff41"
+          : d.rad > maxRad * 0.7
+            ? "#00b32d"
+            : "#00ff41";
+      ctx.fillText(d.glyph, x, y);
+    }
+  }
+
+  function drawMorph(t) {
+    let done = true;
+    for (const d of drops) {
+      const k = Math.min(1, Math.max(0, (t - morphT0 - d.delay) / (MORPH_MS - 500)));
+      if (k < 1) done = false;
+      const e = k * k * (3 - 2 * k); // smoothstep
+      if (Math.random() < 0.05) d.glyph = rndGlyph();
+      ctx.fillStyle = Math.random() < 0.12 ? "#b6ffb9" : "#00ff41";
+      ctx.fillText(d.glyph, d.sx + (d.x - d.sx) * e, d.sy + (d.ty - d.sy) * e);
+    }
+    if (done) {
+      for (const d of drops) d.y = d.ty;
+      phase = "rain";
+    }
+  }
+
+  function drawRain() {
+    for (const d of drops) {
+      if (Math.random() < 0.06) d.glyph = rndGlyph();
+      ctx.fillStyle = Math.random() < 0.06 ? "#b6ffb9" : "#00ff41";
+      ctx.fillText(d.glyph, d.x, d.y);
+      d.y = d.y > h && Math.random() > 0.975 ? 0 : d.y + fontSize;
+    }
+  }
 
   let last = 0;
   function frame(t) {
     if (!document.hidden && t - last > 50) {
       last = t;
-      ctx.fillStyle = "rgba(0,0,0,0.08)";
+      ctx.fillStyle = "rgba(0,0,0,0.06)";
       ctx.fillRect(0, 0, w, h);
       ctx.font = `${fontSize}px monospace`;
-      columns.forEach((y, i) => {
-        const ch = glyphs[(Math.random() * glyphs.length) | 0];
-        const head = Math.random() < 0.06;
-        ctx.fillStyle = head ? "#b6ffb9" : "#00ff41";
-        ctx.fillText(ch, i * fontSize, y * fontSize);
-        columns[i] = y * fontSize > h && Math.random() > 0.975 ? 0 : y + 1;
-      });
+      if (phase === "vortex") drawVortex();
+      else if (phase === "morph") drawMorph(t);
+      else drawRain();
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  return {
+    // engine online: capture each glyph's vortex position and send it
+    // gliding to its waterfall column
+    loaded() {
+      if (phase !== "vortex") return;
+      morphT0 = performance.now();
+      for (const d of drops) {
+        d.sx = cx + Math.cos(d.ang) * d.rad;
+        d.sy = cy + Math.sin(d.ang) * d.rad * 0.55;
+        d.ty = Math.random() * h;
+        d.delay = Math.random() * 500;
+      }
+      phase = "morph";
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -562,8 +657,9 @@ function runAnalysis() {
  *  Boot
  * ------------------------------------------------------------------ */
 async function boot() {
-  startRain();
+  const rain = startRain();
   const boot = $("boot-status");
+  const loader = $("loader");
 
   // examples dropdown
   const sel = $("examples");
@@ -577,14 +673,25 @@ async function boot() {
   });
 
   try {
-    await init();
+    // keep the vortex on screen for a moment even when the wasm is cached
+    await Promise.all([init(), new Promise((r) => setTimeout(r, 800))]);
     boot.textContent = "[ wasm module online — engine ready ]";
     boot.classList.add("ok");
     $("run").disabled = false;
     $("engine-info").textContent = "engine: " + engine_info();
+    const ls = $("loader-status");
+    if (ls) ls.textContent = "[ engine online — entering the matrix ]";
+    rain.loaded();
+    document.body.classList.add("ready");
+    setTimeout(() => loader?.remove(), 1100);
   } catch (e) {
     boot.textContent = "[ FAILED to load wasm module: " + e + " ]";
     boot.classList.add("fail");
+    const ls = $("loader-status");
+    if (ls) {
+      ls.textContent = "[ FAILED to load wasm module: " + e + " ]";
+      ls.classList.add("fail");
+    }
     return;
   }
 

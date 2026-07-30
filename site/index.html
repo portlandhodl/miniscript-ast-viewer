@@ -15,6 +15,14 @@
   <canvas id="rain" aria-hidden="true"></canvas>
   <div class="scanlines" aria-hidden="true"></div>
 
+  <!-- boot loader: vortex swirls behind this until the wasm engine is online -->
+  <div id="loader" aria-hidden="true">
+    <div class="loader-box">
+      <div class="loader-title">MINISCRIPT://AST_BROWSER</div>
+      <div class="loader-status" id="loader-status">[ initializing wasm module — opening the matrix<span class="cursor">▌</span> ]</div>
+    </div>
+  </div>
+
   <header>
     <div class="title">MINISCRIPT://AST_BROWSER<span class="cursor">▌</span></div>
     <div class="subtitle">rust-miniscript → wasm32 &nbsp;·&nbsp; descriptor &amp; policy decompiler terminal</div>
